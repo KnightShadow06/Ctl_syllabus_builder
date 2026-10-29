@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import {
   BookOpen, User, MessageSquare, Target, Library, Scale, Gavel,
   ShieldCheck, CalendarDays, FileDown, Check, AlertTriangle, Plus, Trash2,
@@ -208,14 +208,158 @@ const inputBase = {
   fontSize: 14, color: C.ink, background: "#fff", outline: "none",
 };
 
+const sanitizeEditorContent = (html = "") => {
+  if (!html) return "";
+
+  const temp = document.createElement("div");
+  temp.innerHTML = html;
+
+  const allowedTags = ["B", "STRONG", "I", "EM", "U"];
+  temp.querySelectorAll("*").forEach((node) => {
+    if (!allowedTags.includes(node.tagName)) {
+      const fragment = document.createDocumentFragment();
+      while (node.firstChild) fragment.appendChild(node.firstChild);
+      node.parentNode.replaceChild(fragment, node);
+    }
+  });
+
+  return temp.innerHTML;
+};
+
+const TextEditor = ({ value, onChange, placeholder, rows = 1, mono = false, singleLine = false }) => {
+  const editorRef = useRef(null);
+
+  useEffect(() => {
+    if (editorRef.current && editorRef.current.innerHTML !== value) {
+      editorRef.current.innerHTML = value || "";
+    }
+  }, [value]);
+
+  const persistValue = () => {
+    const raw = editorRef.current?.innerHTML || "";
+    const safe = sanitizeEditorContent(raw);
+    editorRef.current.innerHTML = safe;
+    onChange(safe);
+  };
+
+  const handleKeyDown = (event) => {
+    const isModifier = event.ctrlKey || event.metaKey;
+    const key = event.key.toLowerCase();
+
+    if (!isModifier) return;
+
+    const map = {
+      b: "bold",
+      i: "italic",
+      u: "underline",
+    };
+
+    if (map[key]) {
+      event.preventDefault();
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus();
+      document.execCommand(map[key], false, null);
+      persistValue();
+    }
+  };
+
+  return (
+    <div
+      style={{
+        ...inputBase,
+        minHeight: singleLine ? 34 : rows * 22,
+        height: singleLine ? 34 : undefined,
+        maxHeight: singleLine ? 34 : 220,
+        overflow: singleLine ? "hidden" : "auto",
+        padding: 0,
+        display: "flex",
+        alignItems: "stretch",
+      }}
+    >
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        role="textbox"
+        aria-label={placeholder || "Text editor"}
+        onInput={(e) => onChange(sanitizeEditorContent(e.currentTarget.innerHTML))}
+        onBlur={() => {
+          const safe = sanitizeEditorContent(editorRef.current?.innerHTML || "");
+          editorRef.current.innerHTML = safe;
+          onChange(safe);
+        }}
+        onKeyDown={handleKeyDown}
+        style={{
+          width: "100%",
+          minHeight: singleLine ? 34 : rows * 22,
+          height: singleLine ? 34 : undefined,
+          maxHeight: singleLine ? 34 : 220,
+          overflow: singleLine ? "hidden" : "auto",
+          resize: "vertical",
+          border: "none",
+          borderRadius: 0,
+          boxShadow: "none",
+          background: "transparent",
+          lineHeight: 1.5,
+          whiteSpace: singleLine ? "nowrap" : "pre-wrap",
+          fontFamily: mono ? "ui-monospace, monospace" : inputBase.fontFamily,
+          color: C.ink,
+          padding: "7px 10px",
+          outline: "none",
+        }}
+      />
+    </div>
+  );
+};
+
 const T = ({ value, onChange, placeholder, mono }) => (
-  <input style={{ ...inputBase, fontFamily: mono ? "ui-monospace, monospace" : inputBase.fontFamily }}
-    value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+  <TextEditor value={value} onChange={onChange} placeholder={placeholder} mono={mono} singleLine />
 );
 
+const normalizeRichHtml = (value = "") => {
+  const normalized = String(value)
+    .replace(/<div>/gi, "\n")
+    .replace(/<\/div>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&nbsp;/gi, " ");
+
+  const escapeText = (text = "") =>
+    text.replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+  const walk = (node) => {
+    if (!node) return "";
+    if (node.nodeType === 3) return escapeText(node.textContent || "");
+    if (node.nodeType !== 1) return "";
+
+    const tag = node.nodeName.toUpperCase();
+    if (tag === "BR") return "<br/>";
+    if (["DIV", "P", "SPAN"].includes(tag)) {
+      return Array.from(node.childNodes).map(walk).join("");
+    }
+    if (["B", "STRONG"].includes(tag)) {
+      return `<strong>${Array.from(node.childNodes).map(walk).join("")}</strong>`;
+    }
+    if (["I", "EM"].includes(tag)) {
+      return `<em>${Array.from(node.childNodes).map(walk).join("")}</em>`;
+    }
+    if (tag === "U") {
+      return `<u>${Array.from(node.childNodes).map(walk).join("")}</u>`;
+    }
+    return Array.from(node.childNodes).map(walk).join("");
+  };
+
+  const template = document.createElement("template");
+  template.innerHTML = normalized;
+  return Array.from(template.content.childNodes).map(walk).join("");
+};
+
+const formatRichText = (value = "") => normalizeRichHtml(value);
+
 const A = ({ value, onChange, placeholder, rows = 4 }) => (
-  <textarea style={{ ...inputBase, resize: "vertical", lineHeight: 1.5 }} rows={rows}
-    value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+  <TextEditor value={value} onChange={onChange} placeholder={placeholder} rows={rows} />
 );
 
 const Field = ({ label, hint, children }) => (
@@ -278,8 +422,8 @@ export default function SyllabusBuilder() {
 
   /* ---------- document builder: one source of truth ---------- */
 
-  const esc = (s = "") => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const para = (s = "") => esc(s).split(/\n{2,}/).map((p) =>
+  const esc = (s = "") => normalizeRichHtml(s);
+  const para = (s = "") => formatRichText(s).split(/\n{2,}/).map((p) =>
     `<p>${p.replace(/\n/g, "<br/>")}</p>`).join("");
 
   const docBody = useMemo(() => {
